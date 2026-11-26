@@ -6,13 +6,23 @@
 
 设计契约见 [PAGE-MAP 的服务端章节](https://github.com/whitecat346/u-campus-assistant/blob/main/docs/PAGE-MAP.md)。
 
+获取代码：
+
+```bash
+git clone https://github.com/whitecat346/u-campus-asr
+cd u-campus-asr
+```
+
 ## 接口
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/health` | `{status, model, device, ffmpeg, warm}` |
-| POST | `/asr` | multipart `file`，任意音频（ffmpeg 转 16k 单声道）→ `{text, lang, emotion, events, duration_ms}` |
-| POST | `/asr/url` | `{url, headers?}`，服务端下载后识别（拒绝内网地址） |
+| GET | `/health` | `{status, model, device, ffmpeg, warm, model_dir, loading, cache}` |
+| POST | `/asr` | multipart `file`，任意音频（ffmpeg 转 16k 单声道）→ `{text, lang, elapsed_ms, cached}`；同文件二次上传命中 LRU 缓存 |
+| POST | `/asr/url` | `{url, headers?}`，服务端下载后识别（拒绝内网地址）；同 URL 二次请求命中缓存 |
+| POST | `/cache/clear` | 清空识别结果缓存 |
+
+启动时会按 `UCASR_WARM=1`（默认）在后台线程预热模型，首个请求不必等加载。
 
 ## 部署（Windows，本机，**已实测可用**）
 
@@ -75,4 +85,5 @@ pwsh -File G:\u_camput_script\server\run.ps1
 ## 状态
 
 **已验证可用**（2026-11-26）：`/health` 200、`/asr/url` 对 U校园 CDN 音频（`https://ucontent.cdn.unipus.cn/…_96k.mp3`，免 cookie 可下）返回 1396 字符英文转写；126 秒音频推理约 0.4 秒（rtf 0.003，cuda:0）。
+
 
