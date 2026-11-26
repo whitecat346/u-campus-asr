@@ -1,8 +1,10 @@
 # U校园 ASR 服务端（SenseVoice）
 
-给油猴脚本提供听力题语音识别的本地服务：`FastAPI + FunASR + SenseVoiceSmall`，**只监听 `127.0.0.1:8000`**，浏览器页面（HTTPS）可合法直连回环地址，无混合内容问题。
+给油猴脚本（[u-campus-assistant](https://github.com/whitecat346/u-campus-assistant)）提供听力题语音识别的本地服务：`FastAPI + FunASR + SenseVoiceSmall`，**只监听 `127.0.0.1:8000`**，浏览器页面（HTTPS）可合法直连回环地址，无混合内容问题。
 
-契约见 [../docs/DESIGN.md](../docs/DESIGN.md) §6。
+脚本那边把「ASR 地址」设成 `http://127.0.0.1:8000` 即接上；不部署也不影响判题（听力原文多数随课程内容下发，ASR 只是缺失时的兜底）。
+
+设计契约见 [PAGE-MAP 的服务端章节](https://github.com/whitecat346/u-campus-assistant/blob/main/docs/PAGE-MAP.md)。
 
 ## 接口
 
@@ -14,10 +16,10 @@
 
 ## 部署（Windows，本机，**已实测可用**）
 
-前提：本机已有 `uv`、`ffmpeg`（本机 `ffmpeg` 来自 `F:\anaconda3\Library\bin\ffmpeg.exe`，4.2.2）。
+前提：本机已有 `uv`、`ffmpeg`（`ffmpeg -version` 能跑即可；本机实测 4.2.2）。
 
 ```powershell
-cd G:\u_camput_script\server
+cd <本仓库根目录>
 
 # 1) Python 3.12（3.14 装不了 torch，务必钉 3.12）
 $env:UV_CACHE_DIR='G:\u_camput_script\.cache\uv'   # 默认 uv 缓存在 C:\Users\… 会被沙箱拒绝：拒绝访问 (os error 5)
@@ -31,10 +33,10 @@ uv pip install --python .venv\Scripts\python.exe fastapi uvicorn python-multipar
 ```
 
 ```powershell
-# 4) 下载模型快照到工作区内（避免写 C:\Users\WhiteCAT\.cache 被沙箱拒绝）
-$env:MODELSCOPE_CACHE='G:\u_camput_script\.cache\modelscope'
-server\.venv\Scripts\python.exe -c "from modelscope.hub.snapshot_download import snapshot_download; print(snapshot_download('iic/SenseVoiceSmall', cache_dir=r'G:\u_camput_script\.cache\modelscope'))"
-# → G:\u_camput_script\.cache\modelscope\models\iic--SenseVoiceSmall\snapshots\master
+# 4) 下载模型快照到工作区内（避免写 %USERPROFILE%\.cache 被沙箱拒绝）
+$env:MODELSCOPE_CACHE='<仓库根>\.cache\modelscope'
+server\.venv\Scripts\python.exe -c "from modelscope.hub.snapshot_download import snapshot_download; print(snapshot_download('iic/SenseVoiceSmall', cache_dir=r'<仓库根>\.cache\modelscope'))"
+# → <仓库根>\.cache\modelscope\models\iic--SenseVoiceSmall\snapshots\master
 ```
 
 ```powershell
@@ -64,9 +66,9 @@ pwsh -File G:\u_camput_script\server\run.ps1
 
 ## 已知坑（全部已踩过）
 
-- `uv` 默认缓存在 `C:\Users\WhiteCAT\scoop\persist\uv\cache`，沙箱下报 `error: Could not acquire lock … 拒绝访问 (os error 5)` → 设 `UV_CACHE_DIR` 到工作区。
+- `uv` 默认缓存在 `%USERPROFILE%\scoop\persist\uv\cache`，沙箱下报 `error: Could not acquire lock … 拒绝访问 (os error 5)` → 设 `UV_CACHE_DIR` 到工作区。
 - **funasr 1.4.x 的 `AutoModel(model='iic/SenseVoiceSmall')` 不再认这个仓库名**，会报 `model 'iic/SenseVoiceSmall' is not registered`（注册表里只有 `SenseVoiceSmall` 这个类名；传类名又会去下 `modelscope.cn/api/v1/models/SenseVoiceSmall` 而 404）。正确做法：先 `snapshot_download` 拿本地目录，再把目录传给 `AutoModel`——`asr.py` 的 `_resolve_model_dir()` 已经做了这件事。
-- ModelScope 默认缓存在 `C:\Users\WhiteCAT\.cache\modelscope`，沙箱下 `[WinError 5] 拒绝访问` → 设 `MODELSCOPE_CACHE`。
+- ModelScope 默认缓存在 `%USERPROFILE%\.cache\modelscope`，沙箱下 `[WinError 5] 拒绝访问` → 设 `MODELSCOPE_CACHE`。
 - `funasr` 1.4.x 的 `generate()` **直接返回 `list[dict]`**（旧版是 `{"result": [...]}`），`_first()` 两种都兼容；返回的 `text` 里混着 `<|en|><|NEUTRAL|><|Speech|><|withitn|>` 富文本标记，`_clean()` 已剥掉。
 - 首次推理驻留显存约 2GB，之后常驻（`/health` 的 `warm` 变 `true`）。
 
