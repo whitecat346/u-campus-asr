@@ -12,38 +12,41 @@
 | POST | `/asr` | multipart `file`，任意音频（ffmpeg 转 16k 单声道）→ `{text, lang, emotion, events, duration_ms}` |
 | POST | `/asr/url` | `{url, headers?}`，服务端下载后识别（拒绝内网地址） |
 
-## 部署（Windows，本机）
+## 部署（Windows，本机，**已实测可用**）
 
-前提：本机已有 `uv`、`ffmpeg`（`G:\...` 环境中 `ffmpeg` 来自 Anaconda，`ffmpeg -version` 可验证）。
+前提：本机已有 `uv`、`ffmpeg`（本机 `ffmpeg` 来自 `F:\anaconda3\Library\bin\ffmpeg.exe`，4.2.2）。
 
-```bash
-cd server
+```powershell
+cd G:\u_camput_script\server
 
 # 1) Python 3.12（3.14 装不了 torch，务必钉 3.12）
-uv python install 3.12
+$env:UV_CACHE_DIR='G:\u_camput_script\.cache\uv'   # 默认 uv 缓存在 C:\Users\… 会被沙箱拒绝：拒绝访问 (os error 5)
 uv venv --python 3.12
 
-# 2) 先装 CUDA 版 torch（4060 Ti；cu124 轮子与 torch>=2.5 匹配）
-uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+# 2) 先装 CUDA 版 torch（4060 Ti；cu124 轮子与 torch 2.6 匹配，实测下载约 16 分钟）
+uv pip install --python .venv\Scripts\python.exe torch torchaudio --index-url https://download.pytorch.org/whl/cu124
 
-# 3) 再装其余依赖（torch 已满足，不会重复下载）
-uv pip install fastapi "uvicorn[standard]" python-multipart httpx funasr modelscope soundfile
-
-# 4) 预热模型（会从 ModelScope 拉 iic/SenseVoiceSmall，约 1GB）
-uv run python -c "from funasr import AutoModel; m=AutoModel(model='iic/SenseVoiceSmall', device='cuda:0', disable_update=True); print('model ready')"
+# 3) 再装其余依赖
+uv pip install --python .venv\Scripts\python.exe fastapi uvicorn python-multipart httpx soundfile funasr modelscope
 ```
 
-```bash
-# 5) 启动
-uv run ucasr                     # 等价于 python -m ucasr
-# 或：uv run uvicorn ucasr.main:app --host 127.0.0.1 --port 8000
+```powershell
+# 4) 下载模型快照到工作区内（避免写 C:\Users\WhiteCAT\.cache 被沙箱拒绝）
+$env:MODELSCOPE_CACHE='G:\u_camput_script\.cache\modelscope'
+server\.venv\Scripts\python.exe -c "from modelscope.hub.snapshot_download import snapshot_download; print(snapshot_download('iic/SenseVoiceSmall', cache_dir=r'G:\u_camput_script\.cache\modelscope'))"
+# → G:\u_camput_script\.cache\modelscope\models\iic--SenseVoiceSmall\snapshots\master
+```
+
+```powershell
+# 5) 启动（脚本已封装好 ffmpeg PATH / PYTHONPATH / 模型目录）
+pwsh -File G:\u_camput_script\server\run.ps1
 ```
 
 自测：
 
-```bash
-curl http://127.0.0.1:8000/health
-curl -F "file=@sample.wav" http://127.0.0.1:8000/asr
+```powershell
+(Invoke-WebRequest http://127.0.0.1:8000/health -UseBasicParsing).Content
+# {"status":"ok","model":"iic/SenseVoiceSmall","device":"cuda:0","ffmpeg":true,"warm":false}
 ```
 
 ## 环境变量
@@ -52,17 +55,22 @@ curl -F "file=@sample.wav" http://127.0.0.1:8000/asr
 |---|---|---|
 | `UCASR_HOST` | `127.0.0.1` | 不要改成 `0.0.0.0` |
 | `UCASR_PORT` | `8000` | |
-| `UCASR_MODEL` | `iic/SenseVoiceSmall` | |
+| `UCASR_MODEL` | `iic/SenseVoiceSmall` | ModelScope 仓库名（服务端会自己 snapshot_download） |
+| `UCASR_MODEL_DIR` | 空 | **优先**：指向已下载的本地快照目录 |
+| `MODELSCOPE_CACHE` | 空 | 模型缓存目录（建议放工作区内） |
 | `UCASR_DEVICE` | `auto` | `cuda:0` / `cpu` |
 | `UCASR_MAX_UPLOAD_MB` | `64` | |
 | `UCASR_MAX_URL_MB` | `64` | |
 
-## 已知坑
+## 已知坑（全部已踩过）
 
-- 本机 shell 的 HTTPS 全崩（`schannel: AcquireCredentialsHandle failed: SEC_E_NO_CREDENTIALS`）：模型下载若失败，先用 Node 代理拉取或用 `uv` 内置 TLS 重试；ModaScope 下载失败时改用 `modelscope download --model iic/SenseVoiceSmall --local_dir ./models/SenseVoiceSmall`，再把 `UCASR_MODEL` 指向本地目录。
-- 首次推理会编译/驻留显存（约 2GB 级别），之后常驻。
-- SenseVoice 富文本（情感/事件）以特殊 token 混在 `text` 里；脚本侧只取纯文本。
+- `uv` 默认缓存在 `C:\Users\WhiteCAT\scoop\persist\uv\cache`，沙箱下报 `error: Could not acquire lock … 拒绝访问 (os error 5)` → 设 `UV_CACHE_DIR` 到工作区。
+- **funasr 1.4.x 的 `AutoModel(model='iic/SenseVoiceSmall')` 不再认这个仓库名**，会报 `model 'iic/SenseVoiceSmall' is not registered`（注册表里只有 `SenseVoiceSmall` 这个类名；传类名又会去下 `modelscope.cn/api/v1/models/SenseVoiceSmall` 而 404）。正确做法：先 `snapshot_download` 拿本地目录，再把目录传给 `AutoModel`——`asr.py` 的 `_resolve_model_dir()` 已经做了这件事。
+- ModelScope 默认缓存在 `C:\Users\WhiteCAT\.cache\modelscope`，沙箱下 `[WinError 5] 拒绝访问` → 设 `MODELSCOPE_CACHE`。
+- `funasr` 1.4.x 的 `generate()` **直接返回 `list[dict]`**（旧版是 `{"result": [...]}`），`_first()` 两种都兼容；返回的 `text` 里混着 `<|en|><|NEUTRAL|><|Speech|><|withitn|>` 富文本标记，`_clean()` 已剥掉。
+- 首次推理驻留显存约 2GB，之后常驻（`/health` 的 `warm` 变 `true`）。
 
 ## 状态
 
-M0：接口与推理封装已落地，**模型尚未装/未验证**（按设计决策：部署排在页面勘察之后）。
+**已验证可用**（2026-11-26）：`/health` 200、`/asr/url` 对 U校园 CDN 音频（`https://ucontent.cdn.unipus.cn/…_96k.mp3`，免 cookie 可下）返回 1396 字符英文转写；126 秒音频推理约 0.4 秒（rtf 0.003，cuda:0）。
+

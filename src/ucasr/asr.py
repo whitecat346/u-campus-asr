@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -27,6 +28,30 @@ class AsrError(RuntimeError):
         self.message = message
 
 
+def _resolve_model_dir() -> str:
+    """把 UCASR_MODEL_DIR / UCASR_MODEL 解析成本地快照目录。
+
+    funasr 1.4.x 的 AutoModel(model=...) 不再接受 "iic/SenseVoiceSmall" 这类
+    ModelScope 仓库名（会报 model ... is not registered），必须传本地目录；
+    因此这里自己用 modelscope 做一次 snapshot_download。
+    """
+    if CONFIG.model_dir:
+        if not Path(CONFIG.model_dir).exists():
+            raise AsrError("MODEL_ERROR", f"UCASR_MODEL_DIR 不存在: {CONFIG.model_dir}")
+        return CONFIG.model_dir
+    if Path(CONFIG.model_id).exists():
+        return CONFIG.model_id
+    try:
+        from modelscope.hub.snapshot_download import snapshot_download
+    except Exception as exc:  # pragma: no cover
+        raise AsrError("MODEL_ERROR", f"modelscope 未安装: {exc}") from exc
+    cache = CONFIG.cache_dir or None
+    try:
+        return snapshot_download(CONFIG.model_id, cache_dir=cache)
+    except Exception as exc:  # pragma: no cover
+        raise AsrError("MODEL_ERROR", f"模型下载失败: {exc}") from exc
+
+
 def _load_model():
     global _model_singleton
     if _model_singleton is not None:
@@ -38,9 +63,10 @@ def _load_model():
             from funasr import AutoModel
         except Exception as exc:  # pragma: no cover
             raise AsrError("MODEL_ERROR", f"funasr 未安装或导入失败: {exc}") from exc
+        model_path = _resolve_model_dir()
         try:
             _model_singleton = AutoModel(
-                model=CONFIG.model_id,
+                model=model_path,
                 vad_model=CONFIG.vad_model,
                 vad_kwargs={"max_single_segment_time": 30000},
                 device=CONFIG.resolved_device(),
@@ -73,7 +99,18 @@ def to_wav16k(src: Path, dst: Path) -> None:
         raise AsrError("DECODE_FAILED", f"ffmpeg 转码失败: {proc.stderr.strip()[:300]}")
 
 
-def _first(rec: dict) -> dict:
+_TAG_RE = re.compile(r"<\|[^|]*\|>")
+
+
+def _clean(text: str) -> str:
+    """去掉 SenseVoice 的富文本标记（<|en|> <|NEUTRAL|> <|Speech|> <|withitn|> 等）。"""
+    return re.sub(r"\s{2,}", " ", _TAG_RE.sub(" ", text or "")).strip()
+
+
+def _first(rec):
+    """funasr 1.4.x 的 generate() 直接返回 list[dict]；旧版本包一层 {"result": [...]}。"""
+    if isinstance(rec, list):
+        return rec[0] if rec else {}
     items = rec.get("result") if isinstance(rec, dict) else None
     if isinstance(items, list) and items:
         return items[0]
@@ -100,7 +137,7 @@ def recognize_file(path: Path) -> dict:
         except Exception as exc:  # pragma: no cover
             raise AsrError("MODEL_ERROR", f"推理失败: {exc}") from exc
         item = _first(rec)
-        text = (item.get("text") or "").strip()
+        text = _clean(item.get("text") or "")
         return {
             "text": text,
             "lang": item.get("lang") or "auto",
